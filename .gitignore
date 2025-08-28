@@ -1,0 +1,74 @@
+# OS-specific
+Thumbs.db
+Desktop.ini
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.opendb
+*.VC.db
+*.VC.VC.opendb
+*.suo
+*.user
+*.log
+*.tlog
+*.lastbuildstate
+*.recipe
+x64/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+_deps/
+**/_deps/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+**/*.cmake
+
+# JUCE generated
+JuceLibraryCode/
+**/JuceLibraryCode/
+**/JUCE/**
+**/JUCE.sln
+**/JUCEConfig.cmake
+**/JUCEConfigVersion.cmake
+**/JUCEExportConfig.cmake
+**/juce-*/
+
+# Build artefacts
+build/
+**/build/
+*.obj
+*.pdb
+*.lib
+*.exp
+*.idb
+*.ipdb
+*.iobj
+*.ilk
+*.exe
+*.dll
+*.lib.recipe
+*.res
+*.rsp
+*.pch
+*.cache
+*.tmp
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Misc
+*.DS_Store
+
+
