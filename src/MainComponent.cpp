@@ -1,4 +1,6 @@
 #include "MainComponent.h"
+#include <algorithm>
+#include <cmath>
 
 MainComponent::MainComponent()
 {
@@ -44,8 +46,9 @@ MainComponent::MainComponent()
         juce::dsp::AudioBlock<float> block (channels, 1, (size_t) frames);
         juce::dsp::ProcessContextReplacing<float> ctx (block);
         bandFilter.process (ctx);
-        if (onsetDetector)
-            onsetDetector->pushAudio (mono.get(), frames);
+        for (auto& d : bandOnsets)
+            if (d)
+                d->pushAudio (mono.get(), frames);
 
         audioTimeSec += (double) frames / (double) currentSampleRate.load();
 
@@ -108,7 +111,8 @@ MainComponent::MainComponent()
                 juce::dsp::AudioBlock<float> block (channels, 1, (size_t) frames);
                 juce::dsp::ProcessContextReplacing<float> ctx (block);
                 bandFilter.process (ctx);
-                if (onsetDetector) onsetDetector->pushAudio (mono.get(), frames);
+                for (auto& d : bandOnsets)
+                    if (d) d->pushAudio (mono.get(), frames);
                 audioTimeSec += (double) frames / (double) currentSampleRate.load();
                 int start1, size1, start2, size2;
                 fifo.prepareToWrite (frames, start1, size1, start2, size2);
@@ -250,23 +254,59 @@ void MainComponent::resized()
 
 void MainComponent::timerCallback()
 {
-    if (onsetDetector && tempoEstimator && beatTracker)
+    if (tempoEstimator && beatTracker)
     {
-        std::vector<float> newFlux;
-        onsetDetector->fetchNewFlux(newFlux);
-        if (!newFlux.empty())
+        // Gather flux from each band
+        std::array<std::vector<float>, 4> bandFluxFrames;
+        for (size_t i = 0; i < bandOnsets.size(); ++i)
+            if (bandOnsets[i])
+                bandOnsets[i]->fetchNewFlux(bandFluxFrames[i]);
+
+        // Combine per frame after per-band normalization
+        size_t maxFrames = 0;
+        for (const auto& v : bandFluxFrames)
+            maxFrames = juce::jmax(maxFrames, v.size());
+
+        if (maxFrames > 0)
         {
-            tempoEstimator->appendFlux(newFlux);
+            std::vector<float> combined(maxFrames, 0.0f);
+            for (size_t b = 0; b < bandFluxFrames.size(); ++b)
+            {
+                auto& v = bandFluxFrames[b];
+                if (v.empty()) continue;
+                float mean = 0.0f;
+                for (float x : v) mean += x;
+                mean /= (float) v.size();
+                float var = 0.0f;
+                for (float x : v) { float d = x - mean; var += d * d; }
+                var /= (float) juce::jmax(1u, (unsigned int) v.size());
+                const float stddev = std::sqrt(var) + 1e-6f;
+                for (size_t i = 0; i < v.size(); ++i)
+                {
+                    const float z = (v[i] - mean) / stddev;
+                    combined[i] += z * 0.25f; // equal weight across 4 bands
+                }
+            }
+            tempoEstimator->appendFlux(combined);
         }
 
-        std::vector<double> newOnsets;
-        onsetDetector->fetchOnsets(newOnsets);
-        if (!newOnsets.empty())
+        // Merge onsets from all bands
+        std::vector<double> mergedOnsets;
+        for (auto& det : bandOnsets)
         {
-            beatTracker->onOnsets(newOnsets);
+            if (!det) continue;
+            std::vector<double> bandOn;
+            det->fetchOnsets(bandOn);
+            mergedOnsets.insert(mergedOnsets.end(), bandOn.begin(), bandOn.end());
+        }
+        if (!mergedOnsets.empty())
+        {
+            std::sort(mergedOnsets.begin(), mergedOnsets.end());
+            mergedOnsets.erase(std::unique(mergedOnsets.begin(), mergedOnsets.end(), [](double a, double b){ return std::abs(a - b) < 0.02; }), mergedOnsets.end());
+            beatTracker->onOnsets(mergedOnsets);
             if (oscConnected)
             {
-                for (auto t : newOnsets)
+                for (auto t : mergedOnsets)
                     osc.send ("/beat", (float) t);
             }
             // Send MIDI beat pulses
@@ -274,7 +314,7 @@ void MainComponent::timerCallback()
             {
                 juce::MidiBuffer buffer;
                 const int vel = 100;
-                for (size_t i = 0; i < newOnsets.size(); ++i)
+                for (size_t i = 0; i < mergedOnsets.size(); ++i)
                 {
                     buffer.addEvent (juce::MidiMessage::noteOn  (midiChannel, midiBeatNote, (juce::uint8) vel), 0);
                     buffer.addEvent (juce::MidiMessage::noteOff (midiChannel, midiBeatNote), 60); // short gate
@@ -351,7 +391,11 @@ void MainComponent::prepareProcessing (double sr, int samplesPerBlockExpected)
     bandFilter.get<0>().coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass (sr, 20.0f);
     bandFilter.get<1>().coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass (sr, 2000.0f);
 
-    onsetDetector = std::make_unique<OnsetDetector>(static_cast<int>(sr), 1024, 256);
+    // Multiband onset detectors
+    bandOnsets[0] = std::make_unique<OnsetDetector>(static_cast<int>(sr), 1024, 256,  20.0f, 150.0f);
+    bandOnsets[1] = std::make_unique<OnsetDetector>(static_cast<int>(sr), 1024, 256, 150.0f, 400.0f);
+    bandOnsets[2] = std::make_unique<OnsetDetector>(static_cast<int>(sr), 1024, 256, 400.0f, 800.0f);
+    bandOnsets[3] = std::make_unique<OnsetDetector>(static_cast<int>(sr), 1024, 256, 800.0f, 2000.0f);
     tempoEstimator = std::make_unique<TempoEstimator>(sr, 256);
     beatTracker = std::make_unique<BeatTracker>(sr);
 

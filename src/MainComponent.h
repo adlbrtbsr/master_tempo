@@ -4,6 +4,7 @@
 #include "dsp/OnsetDetector.h"
 #include "dsp/TempoEstimator.h"
 #include "dsp/BeatTracker.h"
+#include <array>
 #if JUCE_WINDOWS
 #include "win/WASAPILoopback.h"
 #endif
@@ -68,8 +69,8 @@ private:
     // Debug: counters
     std::atomic<uint64_t> totalBlocks { 0 };
 
-    // Onset detection
-    std::unique_ptr<OnsetDetector> onsetDetector;
+    // Multiband onset detection: 20-150, 150-400, 400-800, 800-2000 Hz
+    std::array<std::unique_ptr<OnsetDetector>, 4> bandOnsets;
     std::unique_ptr<TempoEstimator> tempoEstimator;
     std::unique_ptr<BeatTracker> beatTracker;
     double audioTimeSec { 0.0 };
