@@ -23,6 +23,10 @@ target_sources(master_tempo PRIVATE
     src/Main.cpp
     src/MainComponent.h
     src/MainComponent.cpp
+    src/ui_setup.cpp
+    src/ui_layout.cpp
+    src/dsp_processing.cpp
+    src/loopback_glue.cpp
     src/win/WASAPILoopback.h
 )
 
