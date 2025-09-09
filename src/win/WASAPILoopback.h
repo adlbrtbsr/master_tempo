@@ -13,7 +13,7 @@
 class WASAPILoopbackCapture
 {
 public:
-    using SampleReadyFn = std::function<void (const float* interleaved, int numFrames, int numChannels, double sampleRate)>;
+    using SampleReadyFn = std::function<void (const float* interleaved, int numFrames, int numChannels, double sampleRate, double qpcSeconds)>;
 
     WASAPILoopbackCapture() = default;
     ~WASAPILoopbackCapture() { stop(); }
@@ -160,9 +160,19 @@ public:
             // For loopback, the stream format must match the device mix format in shared mode
             WAVEFORMATEX* formatToUse = mix;
 
-            // Use default period in shared mode: set both durations to 0
+            // Event-driven shared-mode loopback
+            HANDLE hEvent = CreateEvent (nullptr, FALSE, FALSE, nullptr);
+            if (hEvent == nullptr)
+            {
+                lastError = "CreateEvent failed";
+                CoTaskMemFree (mix);
+                finish (false);
+                if (comHr == S_OK) CoUninitialize();
+                return;
+            }
+
             HRESULT initHr = client->Initialize (AUDCLNT_SHAREMODE_SHARED,
-                                                 AUDCLNT_STREAMFLAGS_LOOPBACK,
+                                                 AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                                                  0, 0, formatToUse, nullptr);
             if (FAILED (initHr))
             {
@@ -180,7 +190,7 @@ public:
                             mix = mix2;
                             formatToUse = mix;
                             initHr = client->Initialize (AUDCLNT_SHAREMODE_SHARED,
-                                                         AUDCLNT_STREAMFLAGS_LOOPBACK,
+                                                         AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                                                          0, 0, formatToUse, nullptr);
                         }
                     }
@@ -191,10 +201,21 @@ public:
                     juce::String hrStr = "0x" + juce::String::toHexString ((int) initHr);
                     lastError = "IAudioClient::Initialize failed, hr=" + hrStr;
                     CoTaskMemFree (mix);
+                    CloseHandle (hEvent);
                     finish (false);
                     if (comHr == S_OK) CoUninitialize();
                     return;
                 }
+            }
+
+            if (FAILED (client->SetEventHandle (hEvent)))
+            {
+                lastError = "IAudioClient::SetEventHandle failed";
+                CoTaskMemFree (mix);
+                CloseHandle (hEvent);
+                finish (false);
+                if (comHr == S_OK) CoUninitialize();
+                return;
             }
 
             Microsoft::WRL::ComPtr<IAudioCaptureClient> cap;
@@ -225,6 +246,7 @@ public:
             {
                 lastError = "IAudioClient::Start failed";
                 CoTaskMemFree (mix);
+                CloseHandle (hEvent);
                 finish (false);
                 if (comHr == S_OK) CoUninitialize();
                 return;
@@ -232,8 +254,18 @@ public:
 
             finish (true);
 
+            LARGE_INTEGER qpcFreqLI { 0 };
+            QueryPerformanceFrequency (&qpcFreqLI);
+            const double qpcFreq = (qpcFreqLI.QuadPart > 0) ? (double) qpcFreqLI.QuadPart : 1.0;
+
             while (running)
             {
+                DWORD wait = WaitForSingleObject (hEvent, 2000);
+                if (wait != WAIT_OBJECT_0)
+                {
+                    // timeout or error: continue or break if stopping
+                }
+
                 UINT32 packetFrames = 0;
                 if (cap->GetNextPacketSize (&packetFrames) == S_OK && packetFrames > 0)
                 {
@@ -243,6 +275,7 @@ public:
                         const bool isSilent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                         const size_t numSamples = (size_t) numFrames * (size_t) channels;
                         const float* floatData = nullptr;
+                        const double qpcSeconds = (double) ((long double) qpc / (long double) qpcFreq);
 
                         if (isSilent)
                         {
@@ -274,16 +307,16 @@ public:
                         }
 
                         if (sampleCallback && numFrames > 0 && channels > 0)
-                            sampleCallback (floatData, (int) numFrames, channels, sr);
+                            sampleCallback (floatData, (int) numFrames, channels, sr, qpcSeconds);
 
                         cap->ReleaseBuffer (numFrames);
                     }
                 }
-                ::Sleep (2);
             }
 
             client->Stop();
             CoTaskMemFree (mix);
+            CloseHandle (hEvent);
             if (comHr == S_OK) CoUninitialize();
         });
 
